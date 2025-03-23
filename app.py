@@ -7,9 +7,6 @@ import psycopg2
 import os
 import re
 import env  # Import env.py
-from openai.error import RateLimitError
-import decimal
-import requests
 
 app = FastAPI()
 
@@ -39,16 +36,19 @@ class QueryRequest(BaseModel):
 
 def get_table_metadata(cursor):
     cursor.execute("""
-    SELECT DATAELEMENT,
-           TABLE_NAME,
-           COLUMN_NAME,
-           SCHEMA_NAME,
-           DATATYPE,
-           SOURCE_FIELD,
-           SOURCE_TABLE,
-           SOURCE_SYSTEM,
-           MAPPING_RULE,
-           OWNER
+    SELECT  NO_, 
+            COLUMN_NAME,
+            DATA_TYPE,
+            DOMAIN,  
+            PK, 
+            NULLABLE, 
+            COLUMN_DESCRIPTION,
+            NOTE, 
+            ORS_MAP, 
+            GB_TABLE_DESCRIPTION,
+            TABLE_DESCRIPTION,
+            TABLE_NAME,
+            SCHEMA_NAME
     FROM public.metadata_
     """)
     metadata = cursor.fetchall()
@@ -59,12 +59,12 @@ with open("diagram.mmd", "r") as file:
 
 def text_to_sql(query_text, metadata):
     try:
-        metadata_str = "\n".join([f"Table: {table_name}, Column: {column_name}, Data Type: {datatype}, Source system: {source_system}, Business DataElement: {dataelement}" for dataelement, table_name, column_name, schema_name, datatype, source_field, source_table, source_system, mapping_rule, owner in metadata])
+        metadata_str = "\n".join([f"Column: {COLUMN_NAME}, Data Type: {DATA_TYPE}, Domain: {DOMAIN}, PK:{PK}, NULLABLE: {NULLABLE}, COLUMN_DESCRIPTION: {COLUMN_DESCRIPTION}, NOTE: {NOTE}, ORS_MAP: {ORS_MAP}, English table description: {GB_TABLE_DESCRIPTION}, Vietnamese table description: {TABLE_DESCRIPTION}, Table_name = {TABLE_NAME}, SCHEMA_NAME ={SCHEMA_NAME} " for NO_, COLUMN_NAME, DATA_TYPE, DOMAIN, PK, NULLABLE, COLUMN_DESCRIPTION, NOTE, ORS_MAP, GB_TABLE_DESCRIPTION, TABLE_DESCRIPTION, TABLE_NAME, SCHEMA_NAME in metadata])
         prompt = f"Retrieve the data from DB and write me an SQL to access it based on metadata:\n{metadata_str}\n\nQuery: {query_text}\n\nMermaid Diagram:\n```mermaid\n{mermaid_diagram}\n```"
         
         # Send the query to OpenAI to generate SQL
         response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": prompt}
@@ -80,16 +80,9 @@ def text_to_sql(query_text, metadata):
         # Print the generated SQL query for debugging
         print(f"Generated SQL Query: {sql_query}")
         
-        # Rollback any previous transaction if needed
-        conn.rollback()
-        
-        # Execute the query in Presto
-        cursor.execute(sql_query)
-        results = cursor.fetchall()
-        return sql_query.upper(), results
+        return sql_query.upper()
     
     except Exception as e:
-        conn.rollback()
         print(f"Error executing query: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -97,17 +90,12 @@ def text_to_sql(query_text, metadata):
 def query(request: QueryRequest):
     query_text = request.query
     metadata = get_table_metadata(cursor)
-    sql_query, results = text_to_sql(query_text, metadata)
+    sql_query = text_to_sql(query_text, metadata)
     
     # Get column names
     column_names = [desc[0] for desc in cursor.description]
     
-    # Convert results to a JSON-serializable format
-    json_results = []
-    for row in results:
-        json_results.append([str(item) if isinstance(item, (int, float, decimal.Decimal)) else item for item in row])
-    
-    return {"sql_query": sql_query, "column_names": column_names, "results": json_results}
+    return {"sql_query": sql_query, "column_names": column_names}
 
 @app.get("/")
 def read_root():
